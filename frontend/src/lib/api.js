@@ -1,26 +1,43 @@
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
+    import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
 
-export async function apiRequest(path, { method = "GET", body, token } = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-  };
+export async function apiRequest(
+    path,
+    { method = "GET", body } = {}
+) {
+    const headers = {
+        "Content-Type": "application/json",
+    };
 
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
+    const publicPaths = [
+        "/auth/login",
+        "/auth/register",
+        "/auth/forgot-password",
+        "/auth/verify-reset-otp",
+        "/auth/reset-password",
+    ];
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+    const requiresAuth = !publicPaths.includes(path);
 
-  const data = await response.json().catch(() => ({}));
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+        method,
+        headers,
+        credentials: "include",
+        body: body === undefined ? undefined : JSON.stringify(body),
+    });
 
-  if (!response.ok) {
-    throw new Error(data.message || `Request failed (${response.status})`);
-  }
+    const data = await response.json().catch(() => ({}));
 
-  return data;
+    if (!response.ok) {
+        if (response.status === 401 && requiresAuth) {
+            window.location.href = "/login";
+            return;
+        }
+
+        throw new Error(
+            data.message || `Request failed (${response.status})`
+        );
+    }
+
+    return data;
 }

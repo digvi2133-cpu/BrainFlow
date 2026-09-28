@@ -1,43 +1,63 @@
 import jwt from "jsonwebtoken";
+import User from "../models/User.js";
 
-export const protect = (req, res, next) => {
+export const protect = async (req, res, next) => {
     try {
-        // 1. Read the Authorization header
-        const authHeader = req.headers.authorization;
+        const token = req.cookies?.brainflow_auth;
 
-        // 2. Check whether the token exists and uses Bearer format
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        if (!token) {
             return res.status(401).json({
                 success: false,
-                message: "Authentication required. Please provide a token.",
+                message: "Authentication required",
             });
         }
 
-        // 3. Extract the token
-        const token = authHeader.split(" ")[1];
-
-        // 4. Check whether JWT_SECRET is configured
         if (!process.env.JWT_SECRET) {
             return res.status(500).json({
                 success: false,
-                message: "Server authentication configuration error.",
+                message: "Server authentication configuration error",
             });
         }
 
-        // 5. Verify the token
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        // 6. Attach the authenticated user's ID to the request
+        const user = await User.findById(decoded.userId).select(
+            "tokenVersion"
+        );
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "User account not found",
+            });
+        }
+
+        const currentTokenVersion = user.tokenVersion ?? 0;
+        const tokenVersion = decoded.tokenVersion ?? 0;
+
+        if (tokenVersion !== currentTokenVersion) {
+            return res.status(401).json({
+                success: false,
+                message: "Session is no longer valid",
+            });
+        }
+
         req.user = {
             userId: decoded.userId,
         };
 
-        // 7. Continue to the protected route
         next();
     } catch (error) {
+        if (error.name === "TokenExpiredError") {
+            return res.status(401).json({
+                success: false,
+                message: "Session expired",
+            });
+        }
+
         return res.status(401).json({
             success: false,
-            message: "Invalid or expired token. Please log in again.",
+            message: "Invalid authentication",
         });
     }
 };

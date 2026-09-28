@@ -5,8 +5,13 @@ import dotenv from "dotenv";
 import { Server } from "socket.io";
 
 import connectDB from "./config/db.js";
+
 import authRoutes from "./routes/authRoutes.js";
 import workspaceRoutes from "./routes/workspaceRoutes.js";
+
+import { socketAuth } from "./socket/socketAuth.js";
+import { getWorkspaceMembership } from "./utils/workspaceAccess.js";
+import cookieParser from "cookie-parser";
 dotenv.config();
 
 const app = express();
@@ -17,11 +22,9 @@ const corsOptions = {
     credentials: true,
 };
 
-// Middleware
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
-
-// Socket.IO setup
+app.use(cookieParser());
 const io = new Server(httpServer, {
     cors: {
         origin: process.env.CLIENT_URL || "http://localhost:5173",
@@ -30,7 +33,8 @@ const io = new Server(httpServer, {
     },
 });
 
-// Health-check route
+io.use(socketAuth);
+
 app.get("/api/health", (req, res) => {
     res.status(200).json({
         success: true,
@@ -38,10 +42,9 @@ app.get("/api/health", (req, res) => {
     });
 });
 
-// Authentication routes
 app.use("/api/auth", authRoutes);
 app.use("/api/workspaces", workspaceRoutes);
-// 404 handler
+
 app.use((req, res) => {
     res.status(404).json({
         success: false,
@@ -49,16 +52,99 @@ app.use((req, res) => {
     });
 });
 
-// Socket connection events
 io.on("connection", (socket) => {
-    console.log(`Socket connected: ${socket.id}`);
+    const userId = socket.user.userId;
 
-    socket.on("disconnect", () => {
-        console.log(`Socket disconnected: ${socket.id}`);
+    socket.join(`user:${userId}`);
+
+    console.log(
+        `Authenticated socket connected: ${socket.id} | User: ${userId}`
+    );
+
+    socket.on("workspace:join", async (workspaceId, callback) => {
+        try {
+            const result = await getWorkspaceMembership(
+                workspaceId,
+                userId
+            );
+
+            if (!result) {
+                const response = {
+                    success: false,
+                    message: "Workspace not found or access denied",
+                };
+
+                if (typeof callback === "function") {
+                    callback(response);
+                }
+
+                return;
+            }
+
+            const room = `workspace:${workspaceId}`;
+
+            await socket.join(room);
+
+            const response = {
+                success: true,
+                workspaceId: workspaceId.toString(),
+                role: result.membership.role,
+            };
+
+            if (typeof callback === "function") {
+                callback(response);
+            }
+
+            console.log(
+                `User ${userId} joined workspace ${workspaceId}`
+            );
+        } catch (error) {
+            console.error("Workspace join error:", error);
+
+            if (typeof callback === "function") {
+                callback({
+                    success: false,
+                    message: "Unable to join workspace",
+                });
+            }
+        }
+    });
+
+    socket.on("workspace:leave", async (workspaceId, callback) => {
+        try {
+            const room = `workspace:${workspaceId}`;
+
+            await socket.leave(room);
+
+            if (typeof callback === "function") {
+                callback({
+                    success: true,
+                    workspaceId: workspaceId.toString(),
+                });
+            }
+
+            console.log(
+                `User ${userId} left workspace ${workspaceId}`
+            );
+        } catch (error) {
+            console.error("Workspace leave error:", error);
+
+            if (typeof callback === "function") {
+                callback({
+                    success: false,
+                    message: "Unable to leave workspace",
+                });
+            }
+        }
+    });
+
+    socket.on("disconnect", (reason) => {
+        console.log(
+            `Socket disconnected: ${socket.id} | User: ${userId} | Reason: ${reason}`
+        );
     });
 });
 
-// Server startup
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
