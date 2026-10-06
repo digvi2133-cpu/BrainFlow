@@ -9,12 +9,13 @@ import {
 import {
     createEditor,
     Editor,
-    Transforms,
     Range,
+    Transforms,
 } from "slate";
+
 import {
-    Slate,
     Editable,
+    Slate,
     withReact,
 } from "slate-react";
 
@@ -27,15 +28,16 @@ import {
 
 import {
     ArrowLeft,
+    RotateCcw,
     Save,
+    Send,
+    Sparkles,
     Wifi,
     WifiOff,
-    Sparkles,
-    Send,
-    RotateCcw,
 } from "lucide-react";
 
 import Layout from "../components/Layout";
+
 import { apiRequest } from "../lib/api";
 
 import {
@@ -156,11 +158,9 @@ export default function Document({ user }) {
         useRef(false);
 
 
-    /*
-     * ============================
-     * LOAD DOCUMENT
-     * ============================
-     */
+    /* =====================================================
+       LOAD DOCUMENT
+    ===================================================== */
 
     useEffect(() => {
         let active = true;
@@ -216,7 +216,9 @@ export default function Document({ user }) {
             }
         };
 
-        loadDocument();
+        if (documentId) {
+            loadDocument();
+        }
 
         return () => {
             active = false;
@@ -224,483 +226,252 @@ export default function Document({ user }) {
     }, [documentId]);
 
 
-    /*
-     * ============================
-     * COLLABORATION
-     * ============================
-     */
+    /* =====================================================
+   COLLABORATION
+===================================================== */
+useEffect(() => {
+    if (!documentData || !documentId) {
+        return;
+    }
 
-    useEffect(() => {
+    if (collaborationStartedRef.current) {
+        return;
+    }
+
+    collaborationStartedRef.current = true;
+    mountedRef.current = true;
+
+    let cancelled = false;
+    let cleanupListeners = () => {};
+
+    const handleConnect = () => {
+        if (cancelled) {
+            return;
+        }
+
+        console.log(
+            "BrainFlow realtime connected:",
+            socket.id
+        );
+
+        setError("");
+        setStatus("connected");
+
+        socket.emit("join:document", {
+            documentId,
+        });
+    };
+
+    const handleConnectError = (err) => {
+        if (cancelled) {
+            return;
+        }
+
+        console.error(
+            "BrainFlow realtime connection error:",
+            err
+        );
+
+        setError(
+            err?.message ||
+                "Unable to connect to realtime collaboration."
+        );
+
+        setStatus("error");
+    };
+
+    const handleDisconnect = (reason) => {
+        if (cancelled) {
+            return;
+        }
+
+        console.warn(
+            "BrainFlow realtime disconnected:",
+            reason
+        );
+
+        setStatus("connecting");
+    };
+
+    const handleDocumentSync = (data) => {
         if (
-            status !== "connecting" ||
-            !documentData ||
-            !documentId
+            !data ||
+            data.documentId !== documentId
         ) {
             return;
         }
 
         if (
-            collaborationStartedRef.current
+            Array.isArray(data.content) &&
+            data.content.length > 0
+        ) {
+            applyingRemoteRef.current = true;
+
+            editor.children = data.content;
+
+            setTimeout(() => {
+                applyingRemoteRef.current = false;
+            }, 0);
+        }
+
+        if (!cancelled) {
+            setStatus("connected");
+        }
+    };
+
+    const handleRemoteContent = (data) => {
+        if (
+            !data ||
+            data.documentId !== documentId
         ) {
             return;
         }
 
-        collaborationStartedRef.current =
-            true;
-
-        mountedRef.current = true;
-
-        let cleanupListeners = null;
-
-        let fallbackTimer = null;
-
-        let cancelled = false;
-
-
-        const startCollaboration =
-            async () => {
-                try {
-                    setError("");
-
-
-                    /*
-                     * ============================
-                     * CONNECT SOCKET
-                     * ============================
-                     */
-
-                    connectSocket();
-
-
-                    if (!socket.connected) {
-                        await new Promise(
-                            (
-                                resolve,
-                                reject
-                            ) => {
-                                let finished =
-                                    false;
-
-
-                                const handleConnect =
-                                    () => {
-                                        if (
-                                            finished
-                                        ) {
-                                            return;
-                                        }
-
-                                        finished =
-                                            true;
-
-                                        clearTimeout(
-                                            timer
-                                        );
-
-                                        socket.off(
-                                            "connect",
-                                            handleConnect
-                                        );
-
-                                        socket.off(
-                                            "connect_error",
-                                            handleError
-                                        );
-
-                                        resolve();
-                                    };
-
-
-                                const handleError =
-                                    (err) => {
-                                        if (
-                                            finished
-                                        ) {
-                                            return;
-                                        }
-
-                                        finished =
-                                            true;
-
-                                        clearTimeout(
-                                            timer
-                                        );
-
-                                        socket.off(
-                                            "connect",
-                                            handleConnect
-                                        );
-
-                                        socket.off(
-                                            "connect_error",
-                                            handleError
-                                        );
-
-                                        reject(
-                                            new Error(
-                                                err?.message ||
-                                                    "Realtime connection failed."
-                                            )
-                                        );
-                                    };
-
-
-                                const timer =
-                                    setTimeout(
-                                        () => {
-                                            if (
-                                                finished
-                                            ) {
-                                                return;
-                                            }
-
-                                            finished =
-                                                true;
-
-                                            socket.off(
-                                                "connect",
-                                                handleConnect
-                                            );
-
-                                            socket.off(
-                                                "connect_error",
-                                                handleError
-                                            );
-
-                                            reject(
-                                                new Error(
-                                                    "Realtime connection timed out."
-                                                )
-                                            );
-                                        },
-                                        10000
-                                    );
-
-
-                                socket.once(
-                                    "connect",
-                                    handleConnect
-                                );
-
-                                socket.once(
-                                    "connect_error",
-                                    handleError
-                                );
-                            }
-                        );
-                    }
-
-
-                    if (cancelled) {
-                        return;
-                    }
-
-
-                    /*
-                     * ============================
-                     * DOCUMENT SYNC
-                     * ============================
-                     */
-
-                    const handleDocumentSync =
-                        (data) => {
-                            if (
-                                !data ||
-                                data.documentId !==
-                                    documentId
-                            ) {
-                                return;
-                            }
-
-                            if (
-                                Array.isArray(
-                                    data.content
-                                ) &&
-                                data.content.length
-                            ) {
-                                applyingRemoteRef.current =
-                                    true;
-
-                                editor.children =
-                                    data.content;
-
-                                setTimeout(() => {
-                                    applyingRemoteRef.current =
-                                        false;
-                                }, 0);
-                            }
-
-                            if (
-                                mountedRef.current
-                            ) {
-                                setStatus(
-                                    "connected"
-                                );
-                            }
-                        };
-
-
-                    /*
-                     * ============================
-                     * REMOTE CONTENT
-                     * ============================
-                     */
-
-                    const handleRemoteContent =
-                        (data) => {
-                            if (
-                                !data ||
-                                data.documentId !==
-                                    documentId
-                            ) {
-                                return;
-                            }
-
-                            if (
-                                !Array.isArray(
-                                    data.content
-                                )
-                            ) {
-                                return;
-                            }
-
-                            applyingRemoteRef.current =
-                                true;
-
-                            editor.children =
-                                data.content;
-
-                            setTimeout(() => {
-                                applyingRemoteRef.current =
-                                    false;
-                            }, 0);
-                        };
-
-
-                    /*
-                     * ============================
-                     * SOCKET ERROR
-                     * ============================
-                     */
-
-                    const handleDocumentError =
-                        (err) => {
-                            if (
-                                !mountedRef.current
-                            ) {
-                                return;
-                            }
-
-                            console.error(
-                                "Document socket error:",
-                                err
-                            );
-
-                            setError(
-                                err?.message ||
-                                    "Realtime collaboration failed."
-                            );
-
-                            setStatus(
-                                "error"
-                            );
-                        };
-
-
-                    /*
-                     * ============================
-                     * REGISTER LISTENERS
-                     * ============================
-                     */
-
-                    socket.on(
-                        "document:sync",
-                        handleDocumentSync
-                    );
-
-                    socket.on(
-                        "document:content",
-                        handleRemoteContent
-                    );
-
-                    socket.on(
-                        "document:error",
-                        handleDocumentError
-                    );
-
-
-                    cleanupListeners =
-                        () => {
-                            socket.off(
-                                "document:sync",
-                                handleDocumentSync
-                            );
-
-                            socket.off(
-                                "document:content",
-                                handleRemoteContent
-                            );
-
-                            socket.off(
-                                "document:error",
-                                handleDocumentError
-                            );
-                        };
-
-
-                    /*
-                     * ============================
-                     * JOIN DOCUMENT ROOM
-                     * ============================
-                     */
-
-                    socket.emit(
-                        "join:document",
-                        {
-                            documentId,
-                        }
-                    );
-
-
-                    /*
-                     * ============================
-                     * FALLBACK
-                     * ============================
-                     */
-
-                    fallbackTimer =
-                        setTimeout(() => {
-                            if (
-                                mountedRef.current &&
-                                !cancelled
-                            ) {
-                                setStatus(
-                                    "connected"
-                                );
-                            }
-                        }, 3000);
-                } catch (err) {
-                    console.error(
-                        "Collaboration setup error:",
-                        err
-                    );
-
-                    if (
-                        mountedRef.current &&
-                        !cancelled
-                    ) {
-                        setError(
-                            err?.message ||
-                                "Unable to connect to realtime collaboration."
-                        );
-
-                        setStatus("error");
-                    }
-                }
-            };
-
-
-        startCollaboration();
-
-
-        /*
-         * ============================
-         * CLEANUP
-         * ============================
-         */
-
-        return () => {
-            cancelled = true;
-
-            mountedRef.current = false;
-
-
-            if (fallbackTimer) {
-                clearTimeout(
-                    fallbackTimer
-                );
+        if (!Array.isArray(data.content)) {
+            return;
+        }
+
+        applyingRemoteRef.current = true;
+
+        editor.children = data.content;
+
+        setTimeout(() => {
+            applyingRemoteRef.current = false;
+        }, 0);
+    };
+
+    const handleDocumentError = (data) => {
+        if (cancelled) {
+            return;
+        }
+
+        console.error(
+            "Document socket error:",
+            data
+        );
+
+        setError(
+            data?.message ||
+                "Realtime collaboration failed."
+        );
+
+        setStatus("error");
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on(
+        "connect_error",
+        handleConnectError
+    );
+    socket.on(
+        "disconnect",
+        handleDisconnect
+    );
+
+    socket.on(
+        "document:sync",
+        handleDocumentSync
+    );
+
+    socket.on(
+        "document:content",
+        handleRemoteContent
+    );
+
+    socket.on(
+        "document:error",
+        handleDocumentError
+    );
+
+    cleanupListeners = () => {
+        socket.off("connect", handleConnect);
+        socket.off(
+            "connect_error",
+            handleConnectError
+        );
+        socket.off(
+            "disconnect",
+            handleDisconnect
+        );
+
+        socket.off(
+            "document:sync",
+            handleDocumentSync
+        );
+
+        socket.off(
+            "document:content",
+            handleRemoteContent
+        );
+
+        socket.off(
+            "document:error",
+            handleDocumentError
+        );
+    };
+
+    setStatus("connecting");
+
+    connectSocket();
+
+    return () => {
+        cancelled = true;
+        mountedRef.current = false;
+
+        cleanupListeners();
+
+        try {
+            leaveDocument(documentId);
+        } catch (err) {
+            console.error(
+                "Error leaving document:",
+                err
+            );
+        }
+
+        collaborationStartedRef.current = false;
+    };
+}, [
+    documentData,
+    documentId,
+    editor,
+]);
+
+
+    /* =====================================================
+       TITLE AUTOSAVE
+    ===================================================== */
+
+    const saveTitle = useCallback(
+        async () => {
+            if (!documentId) {
+                return;
             }
-
-
-            if (cleanupListeners) {
-                cleanupListeners();
-            }
-
-
-            /*
-             * IMPORTANT:
-             *
-             * leaveDocument() is synchronous.
-             *
-             * DO NOT:
-             *
-             * leaveDocument(documentId)
-             *     .catch(...)
-             */
 
             try {
-                leaveDocument(
-                    documentId
+                await apiRequest(
+                    `/documents/${documentId}`,
+                    {
+                        method: "PATCH",
+                        body: {
+                            title,
+                        },
+                    }
                 );
             } catch (err) {
                 console.error(
-                    "Error leaving document:",
+                    "Title save error:",
                     err
                 );
+
+                setError(
+                    err?.message ||
+                        "Unable to save title."
+                );
             }
-
-
-            collaborationStartedRef.current =
-                false;
-        };
-    }, [
-        status,
-        documentData,
-        documentId,
-        editor,
-    ]);
-
-
-    /*
-     * ============================
-     * TITLE AUTOSAVE
-     * ============================
-     */
-
-    const saveTitle =
-        useCallback(
-            async () => {
-                if (!documentId) {
-                    return;
-                }
-
-                try {
-                    await apiRequest(
-                        `/documents/${documentId}`,
-                        {
-                            method: "PATCH",
-                            body: {
-                                title,
-                            },
-                        }
-                    );
-                } catch (err) {
-                    console.error(
-                        "Title save error:",
-                        err
-                    );
-
-                    setError(
-                        err?.message ||
-                            "Unable to save title."
-                    );
-                }
-            },
-            [
-                documentId,
-                title,
-            ]
-        );
+        },
+        [documentId, title]
+    );
 
 
     useEffect(() => {
@@ -711,11 +482,10 @@ export default function Document({ user }) {
             return;
         }
 
-        const timer =
-            setTimeout(
-                saveTitle,
-                700
-            );
+        const timer = setTimeout(
+            saveTitle,
+            700
+        );
 
         return () =>
             clearTimeout(timer);
@@ -726,11 +496,9 @@ export default function Document({ user }) {
     ]);
 
 
-    /*
-     * ============================
-     * EDITOR CHANGE
-     * ============================
-     */
+    /* =====================================================
+       EDITOR CHANGE
+    ===================================================== */
 
     const handleEditorChange =
         (nextValue) => {
@@ -746,6 +514,10 @@ export default function Document({ user }) {
                 return;
             }
 
+            if (!socket.connected) {
+                return;
+            }
+
             socket.emit(
                 "document:content",
                 {
@@ -756,268 +528,296 @@ export default function Document({ user }) {
         };
 
 
-    /*
-     * ============================
-     * CAPTURE SELECTION
-     * ============================
-     */
+    /* =====================================================
+       CAPTURE SELECTION
+    ===================================================== */
 
     const captureSelection = () => {
-    if (!editor.selection) {
-        selectionRef.current = null;
-        return;
-    }
+        if (!editor.selection) {
+            selectionRef.current = null;
+            return;
+        }
 
-    if (Range.isCollapsed(editor.selection)) {
-        selectionRef.current = null;
-        return;
-    }
+        if (
+            Range.isCollapsed(
+                editor.selection
+            )
+        ) {
+            selectionRef.current = null;
+            return;
+        }
 
-    selectionRef.current = {
-        anchor: {
-            path: [...editor.selection.anchor.path],
-            offset: editor.selection.anchor.offset,
-        },
+        selectionRef.current = {
+            anchor: {
+                path: [
+                    ...editor.selection
+                        .anchor.path,
+                ],
+                offset:
+                    editor.selection.anchor
+                        .offset,
+            },
 
-        focus: {
-            path: [...editor.selection.focus.path],
-            offset: editor.selection.focus.offset,
-        },
+            focus: {
+                path: [
+                    ...editor.selection
+                        .focus.path,
+                ],
+                offset:
+                    editor.selection.focus
+                        .offset,
+            },
+        };
     };
-};
-    /*
-     * ============================
-     * AI ACTION
-     * ============================
-     */
 
-    const runAI =
-        async (action) => {
-            captureSelection();
 
-            let selectedText = "";
+    /* =====================================================
+       AI ACTION
+    ===================================================== */
 
-           if (
-    editor.selection &&
-    !Range.isCollapsed(editor.selection)
-) {
-                selectedText =
-                    Editor.string(
-                        editor,
-                        editor.selection
-                    );
-            }
+    const runAI = async (action) => {
+        captureSelection();
 
-            setAiLoading(true);
-            setAiError("");
-            setAiText("");
+        let selectedText = "";
 
-            try {
-                const response =
-                    await apiRequest(
-                        "/ai/chat",
-                        {
-                            method: "POST",
-                            body: {
-                                documentId,
-                                action,
-                                selectedText,
-                                message:
-                                    selectedText
-                                        ? `Apply the ${action} action to the selected text.`
-                                        : `${action} the document and provide a useful result.`,
-                            },
-                        }
-                    );
+        if (
+            editor.selection &&
+            !Range.isCollapsed(
+                editor.selection
+            )
+        ) {
+            selectedText =
+                Editor.string(
+                    editor,
+                    editor.selection
+                );
+        }
 
-                const result =
-                    response?.response
-                        ?.text?.trim();
+        setAiLoading(true);
+        setAiError("");
+        setAiText("");
 
-                if (!result) {
-                    throw new Error(
-                        "AI returned an empty response."
-                    );
-                }
+        try {
+            const response =
+                await apiRequest(
+                    "/ai/chat",
+                    {
+                        method: "POST",
 
-                setAiText(result);
-            } catch (err) {
-                console.error(
-                    "AI action error:",
-                    err
+                        body: {
+                            documentId,
+                            action,
+                            selectedText,
+
+                            message:
+                                selectedText
+                                    ? `Apply the ${action} action to the selected text.`
+                                    : `${action} the document and provide a useful result.`,
+                        },
+                    }
                 );
 
-                setAiError(
-                    err?.message ||
-                        "Unable to generate AI response."
+            const result =
+                response?.response?.text?.trim();
+
+            if (!result) {
+                throw new Error(
+                    "AI returned an empty response."
                 );
-            } finally {
-                setAiLoading(false);
-            }
-        };
-
-
-    /*
-     * ============================
-     * AI CHAT
-     * ============================
-     */
-
-    const sendChat =
-        async () => {
-            const cleanMessage =
-                message.trim();
-
-            if (!cleanMessage) {
-                return;
             }
 
-            captureSelection();
+            setAiText(result);
+        } catch (err) {
+            console.error(
+                "AI action error:",
+                err
+            );
 
-            let selectedText = "";
+            setAiError(
+                err?.message ||
+                    "Unable to generate AI response."
+            );
+        } finally {
+            setAiLoading(false);
+        }
+    };
 
+
+    /* =====================================================
+       AI CHAT
+    ===================================================== */
+
+    const sendChat = async () => {
+        const cleanMessage =
+            message.trim();
+
+        if (!cleanMessage) {
+            return;
+        }
+
+        captureSelection();
+
+        let selectedText = "";
+
+        if (
+            editor.selection &&
+            !Range.isCollapsed(
+                editor.selection
+            )
+        ) {
+            selectedText =
+                Editor.string(
+                    editor,
+                    editor.selection
+                );
+        }
+
+        setAiLoading(true);
+        setAiError("");
+        setAiText("");
+
+        try {
+            const response =
+                await apiRequest(
+                    "/ai/chat",
+                    {
+                        method: "POST",
+
+                        body: {
+                            documentId,
+                            action: "chat",
+                            selectedText,
+                            message:
+                                cleanMessage,
+                        },
+                    }
+                );
+
+            const result =
+                response?.response?.text?.trim();
+
+            if (!result) {
+                throw new Error(
+                    "AI returned an empty response."
+                );
+            }
+
+            setAiText(result);
+            setMessage("");
+        } catch (err) {
+            console.error(
+                "AI chat error:",
+                err
+            );
+
+            setAiError(
+                err?.message ||
+                    "Unable to generate AI response."
+            );
+        } finally {
+            setAiLoading(false);
+        }
+    };
+
+
+    /* =====================================================
+       APPLY AI RESULT
+    ===================================================== */
+
+    const applyAI = () => {
+        if (!aiText.trim()) {
+            return;
+        }
+
+        try {
             if (
-    editor.selection &&
-    !Range.isCollapsed(editor.selection)
-) {
-    selectedText = Editor.string(
-        editor,
-        editor.selection
-    );
-}
-            setAiLoading(true);
-            setAiError("");
+                selectionRef.current
+            ) {
+                Transforms.select(
+                    editor,
+                    selectionRef.current
+                );
+
+                Transforms.delete(
+                    editor
+                );
+
+                Transforms.insertText(
+                    editor,
+                    aiText
+                );
+            } else {
+                Transforms.insertNodes(
+                    editor,
+                    {
+                        type: "paragraph",
+
+                        children: [
+                            {
+                                text: aiText,
+                            },
+                        ],
+                    }
+                );
+            }
+
             setAiText("");
 
-            try {
-                const response =
-                    await apiRequest(
-                        "/ai/chat",
-                        {
-                            method: "POST",
-                            body: {
-                                documentId,
-                                action: "chat",
-                                selectedText,
-                                message:
-                                    cleanMessage,
-                            },
-                        }
-                    );
+            selectionRef.current =
+                null;
+        } catch (err) {
+            console.error(
+                "AI apply error:",
+                err
+            );
 
-                const result =
-                    response?.response
-                        ?.text?.trim();
-
-                if (!result) {
-                    throw new Error(
-                        "AI returned an empty response."
-                    );
-                }
-
-                setAiText(result);
-                setMessage("");
-            } catch (err) {
-                console.error(
-                    "AI chat error:",
-                    err
-                );
-
-                setAiError(
-                    err?.message ||
-                        "Unable to generate AI response."
-                );
-            } finally {
-                setAiLoading(false);
-            }
-        };
+            setAiError(
+                "Unable to apply AI result to the document."
+            );
+        }
+    };
 
 
-    /*
-     * ============================
-     * APPLY AI RESULT
-     * ============================
-     */
+    /* =====================================================
+       RETRY
+    ===================================================== */
 
-    const applyAI =
-        () => {
-            if (!aiText.trim()) {
-                return;
-            }
+  const retryConnection = () => {
+    setError("");
+    setStatus("connecting");
 
-            try {
-                if (
-                    selectionRef.current
-                ) {
-                    Transforms.select(
-                        editor,
-                        selectionRef.current
-                    );
+    collaborationStartedRef.current = false;
+    mountedRef.current = true;
 
-                    Transforms.delete(
-                        editor
-                    );
+    try {
+        if (socket.connected) {
+            socket.emit("join:document", {
+                documentId,
+            });
 
-                    Transforms.insertText(
-                        editor,
-                        aiText
-                    );
-                } else {
-                    Transforms.insertNodes(
-                        editor,
-                        {
-                            type: "paragraph",
-                            children: [
-                                {
-                                    text: aiText,
-                                },
-                            ],
-                        }
-                    );
-                }
+            setStatus("connected");
+            return;
+        }
 
-                setAiText("");
+        connectSocket();
+    } catch (err) {
+        console.error(
+            "Socket retry error:",
+            err
+        );
 
-                selectionRef.current =
-                    null;
-            } catch (err) {
-                console.error(
-                    "AI apply error:",
-                    err
-                );
+        setError(
+            err?.message ||
+                "Unable to reconnect to realtime collaboration."
+        );
 
-                setAiError(
-                    "Unable to apply AI result to the document."
-                );
-            }
-        };
+        setStatus("error");
+    }
+};  
 
-
-    /*
-     * ============================
-     * RETRY
-     * ============================
-     */
-
-    const retryConnection =
-        () => {
-            setError("");
-
-            collaborationStartedRef.current =
-                false;
-
-            mountedRef.current =
-                true;
-
-            setStatus("connecting");
-        };
-
-
-    /*
-     * ============================
-     * UI STATES
-     * ============================
-     */
+    /* =====================================================
+       LOADING
+    ===================================================== */
 
     if (status === "loading") {
         return (
@@ -1030,6 +830,10 @@ export default function Document({ user }) {
     }
 
 
+    /* =====================================================
+       ERROR
+    ===================================================== */
+
     if (status === "error") {
         return (
             <Layout user={user}>
@@ -1037,6 +841,7 @@ export default function Document({ user }) {
                     <div className="glass rounded-2xl p-7">
 
                         <div className="flex items-center gap-3 mb-3">
+
                             <WifiOff
                                 className="text-red-400"
                                 size={22}
@@ -1045,6 +850,7 @@ export default function Document({ user }) {
                             <h1 className="text-2xl font-bold text-red-300">
                                 Document connection failed
                             </h1>
+
                         </div>
 
                         <p className="text-slate-400">
@@ -1075,6 +881,7 @@ export default function Document({ user }) {
                             </button>
 
                         </div>
+
                     </div>
                 </div>
             </Layout>
@@ -1082,11 +889,9 @@ export default function Document({ user }) {
     }
 
 
-    /*
-     * ============================
-     * MAIN UI
-     * ============================
-     */
+    /* =====================================================
+       MAIN UI
+    ===================================================== */
 
     return (
         <Layout user={user}>
@@ -1105,7 +910,9 @@ export default function Document({ user }) {
                         }
                         className="p-2 transition rounded-xl hover:bg-white/10"
                     >
-                        <ArrowLeft size={20} />
+                        <ArrowLeft
+                            size={20}
+                        />
                     </button>
 
                     <input
@@ -1128,7 +935,9 @@ export default function Document({ user }) {
                     >
                         {status ===
                         "connected" ? (
-                            <Wifi size={13} />
+                            <Wifi
+                                size={13}
+                            />
                         ) : (
                             <WifiOff
                                 size={13}
@@ -1163,7 +972,8 @@ export default function Document({ user }) {
                         <Slate
                             editor={editor}
                             initialValue={
-                                documentData?.content
+                                documentData
+                                    ?.content
                                     ?.length
                                     ? documentData.content
                                     : EMPTY_CONTENT
@@ -1275,7 +1085,6 @@ export default function Document({ user }) {
                                         "Enter"
                                     ) {
                                         e.preventDefault();
-
                                         sendChat();
                                     }
                                 }}
@@ -1352,9 +1161,7 @@ export default function Document({ user }) {
                                         title="Discard result"
                                     >
                                         <RotateCcw
-                                            size={
-                                                15
-                                            }
+                                            size={15}
                                         />
                                     </button>
 

@@ -6,13 +6,13 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
 import jwt from "jsonwebtoken";
-import * as Y from "yjs";
 import { Server as SocketIOServer } from "socket.io";
+import * as Y from "yjs";
 
 import Document from "./models/Document.js";
 import Membership from "./models/Membership.js";
 
-import { connectDB } from "./config/db.js";
+import {connectDB} from "./config/db.js";
 
 import authRoutes from "./routes/auth.js";
 import workspaceRoutes from "./routes/workspaces.js";
@@ -28,6 +28,16 @@ const CLIENT_URL =
 const app = express();
 const server = http.createServer(app);
 
+/* -------------------------------------------------------
+   DATABASE
+------------------------------------------------------- */
+
+await connectDB();
+
+/* -------------------------------------------------------
+   MIDDLEWARE
+------------------------------------------------------- */
+
 app.use(
     cors({
         origin: CLIENT_URL,
@@ -40,12 +50,33 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan("dev"));
 
+/* -------------------------------------------------------
+   HEALTH CHECK
+------------------------------------------------------- */
+
 app.get("/api/health", (req, res) => {
-    return res.status(200).json({
+    res.json({
         success: true,
-        message: "BrainFlow API is running.",
+        message: "BrainFlow backend is running.",
+        environment: process.env.NODE_ENV || "development",
+        socket: true,
     });
 });
+
+/* -------------------------------------------------------
+   ROOT
+------------------------------------------------------- */
+
+app.get("/", (req, res) => {
+    res.json({
+        success: true,
+        message: "BrainFlow API",
+    });
+});
+
+/* -------------------------------------------------------
+   API ROUTES
+------------------------------------------------------- */
 
 app.use("/api/auth", authRoutes);
 app.use("/api/workspaces", workspaceRoutes);
@@ -53,189 +84,342 @@ app.use("/api/documents", documentRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/notifications", notificationRoutes);
 
-/* =========================================================
+/* -------------------------------------------------------
    SOCKET.IO
-========================================================= */
+------------------------------------------------------- */
 
 const io = new SocketIOServer(server, {
+    path: "/socket.io/",
+
     cors: {
         origin: CLIENT_URL,
         credentials: true,
     },
+
+    transports: ["polling", "websocket"],
+
+    allowEIO3: false,
+
+    pingInterval: 25000,
+    pingTimeout: 20000,
 });
 
-const documentRooms = new Map();
-
-const getSocketUser = (socket) => {
-    return socket.user || null;
-};
-
-const isValidObjectId = (id) => {
-    return /^[a-fA-F0-9]{24}$/.test(String(id || ""));
-};
-
-const getMembership = async (documentId, userId) => {
-    if (!isValidObjectId(documentId) || !isValidObjectId(userId)) {
-        return null;
-    }
-
-    const document = await Document.findById(documentId).select(
-        "workspace createdBy"
-    );
-
-    if (!document) {
-        return null;
-    }
-
-    const membership = await Membership.findOne({
-        workspace: document.workspace,
-        user: userId,
-        status: "active",
-    });
-
-    if (!membership) {
-        return null;
-    }
-
-    return {
-        document,
-        membership,
-    };
-};
-
-/* ---------------------------------------------------------
-   Socket authentication
---------------------------------------------------------- */
+/* -------------------------------------------------------
+   SOCKET AUTHENTICATION
+------------------------------------------------------- */
 
 io.use((socket, next) => {
     try {
-        const token =
-            socket.handshake.auth?.token ||
-            socket.handshake.headers?.authorization?.replace(
-                "Bearer ",
-                ""
+        const cookieHeader =
+            socket.handshake.headers.cookie || "";
+
+        const cookieName =
+            process.env.COOKIE_NAME || "brainflow_auth";
+
+        let cookieToken = null;
+
+        if (cookieHeader) {
+            const cookies = cookieHeader
+                .split(";")
+                .map((cookie) => cookie.trim());
+
+            const authCookie = cookies.find((cookie) =>
+                cookie.startsWith(`${cookieName}=`)
             );
 
-        /*
-         * BrainFlow normally authenticates using the HttpOnly cookie.
-         * Socket.IO cannot automatically read that cookie as a JWT,
-         * so we also support the auth token when supplied by the client.
-         */
+            if (authCookie) {
+                cookieToken = authCookie.slice(
+                    cookieName.length + 1
+                );
+            }
+        }
 
-        if (!token) {
-            /*
-             * If your socket implementation already authenticates
-             * through cookies, this middleware can be expanded there.
-             *
-             * For now we allow the connection and authorize every
-             * document operation server-side.
-             */
-            socket.user = null;
-            return next();
+        const authToken =
+            socket.handshake.auth?.token ||
+            cookieToken;
+
+        if (!authToken) {
+            console.error(
+                "Socket authentication failed: no token."
+            );
+
+            return next(
+                new Error("Authentication required.")
+            );
         }
 
         const decoded = jwt.verify(
-            token,
+            authToken,
             process.env.JWT_SECRET
         );
 
-        socket.user = decoded;
+        if (!decoded?.userId) {
+            console.error(
+                "Socket authentication failed: invalid user."
+            );
 
-        return next();
+            return next(
+                new Error("Authentication failed.")
+            );
+        }
+
+        socket.user = {
+            userId: decoded.userId,
+        };
+
+        console.log(
+            "Socket authenticated:",
+            decoded.userId
+        );
+
+        next();
     } catch (error) {
         console.error(
             "Socket authentication failed:",
             error.message
         );
 
-        return next(
-            new Error("Socket authentication failed.")
+        next(
+            new Error("Authentication failed.")
         );
     }
 });
 
-/* ---------------------------------------------------------
-   Socket connection
---------------------------------------------------------- */
+/* -------------------------------------------------------
+   SOCKET STATE
+------------------------------------------------------- */
+
+/*
+   documentRooms structure:
+
+   Map<
+       documentId,
+       Set<socketId>
+   >
+*/
+
+const documentRooms = new Map();
+
+/*
+   socketDocuments structure:
+
+   Map<
+       socketId,
+       Set<documentId>
+   >
+*/
+
+const socketDocuments = new Map();
+
+/* -------------------------------------------------------
+   HELPERS
+------------------------------------------------------- */
+
+const getDocumentRoom = (documentId) =>
+    `document:${documentId}`;
+
+const addSocketToDocument = (
+    socketId,
+    documentId
+) => {
+    if (!documentRooms.has(documentId)) {
+        documentRooms.set(
+            documentId,
+            new Set()
+        );
+    }
+
+    documentRooms
+        .get(documentId)
+        .add(socketId);
+
+    if (!socketDocuments.has(socketId)) {
+        socketDocuments.set(
+            socketId,
+            new Set()
+        );
+    }
+
+    socketDocuments
+        .get(socketId)
+        .add(documentId);
+};
+
+const removeSocketFromDocument = (
+    socketId,
+    documentId
+) => {
+    const roomSockets =
+        documentRooms.get(documentId);
+
+    if (roomSockets) {
+        roomSockets.delete(socketId);
+
+        if (roomSockets.size === 0) {
+            documentRooms.delete(documentId);
+        }
+    }
+
+    const documents =
+        socketDocuments.get(socketId);
+
+    if (documents) {
+        documents.delete(documentId);
+
+        if (documents.size === 0) {
+            socketDocuments.delete(socketId);
+        }
+    }
+};
+
+const isSocketInDocument = (
+    socketId,
+    documentId
+) => {
+    const sockets =
+        documentRooms.get(documentId);
+
+    return sockets?.has(socketId) || false;
+};
+
+/* -------------------------------------------------------
+   SOCKET CONNECTION
+------------------------------------------------------- */
 
 io.on("connection", (socket) => {
     console.log(
         `Socket connected: ${socket.id}`
     );
 
+    console.log(
+        `Socket user: ${socket.user.userId}`
+    );
+
+    /* ---------------------------------------------------
+       JOIN DOCUMENT
+    --------------------------------------------------- */
+
     socket.on(
         "join:document",
-        async ({ documentId } = {}) => {
+        async ({ documentId }) => {
             try {
-                if (!isValidObjectId(documentId)) {
-                    socket.emit("document:error", {
-                        documentId,
-                        message: "Invalid document ID.",
-                    });
+                if (!documentId) {
+                    socket.emit(
+                        "document:error",
+                        {
+                            message:
+                                "Document ID is required.",
+                        }
+                    );
 
                     return;
                 }
 
                 const userId =
-                    getSocketUser(socket)?.userId;
+                    socket.user?.userId;
 
-                /*
-                 * If the socket has a JWT user, verify workspace access.
-                 * If the existing frontend connection does not provide
-                 * the socket JWT, the HTTP API still protects the
-                 * document and this socket is limited to the requested
-                 * room.
-                 */
-
-                if (userId) {
-                    const access =
-                        await getMembership(
-                            documentId,
-                            userId
-                        );
-
-                    if (!access) {
-                        socket.emit("document:error", {
-                            documentId,
+                if (!userId) {
+                    socket.emit(
+                        "document:error",
+                        {
                             message:
-                                "You do not have access to this document.",
-                        });
+                                "Authentication required.",
+                        }
+                    );
 
-                        return;
-                    }
+                    return;
                 }
 
-                const room = `document:${documentId}`;
+                const document =
+                    await Document.findById(
+                        documentId
+                    );
+
+                if (!document) {
+                    socket.emit(
+                        "document:error",
+                        {
+                            message:
+                                "Document not found.",
+                        }
+                    );
+
+                    return;
+                }
+
+                /*
+                   Check whether the user has
+                   access to this document's workspace.
+                */
+
+                const membership =
+                    await Membership.findOne({
+                        workspace:
+                            document.workspace,
+                        user: userId,
+                    });
+
+                if (!membership) {
+                    socket.emit(
+                        "document:error",
+                        {
+                            message:
+                                "You do not have access to this document.",
+                        }
+                    );
+
+                    return;
+                }
+
+                const room =
+                    getDocumentRoom(
+                        documentId
+                    );
 
                 socket.join(room);
 
-                if (!documentRooms.has(documentId)) {
-                    documentRooms.set(
-                        documentId,
-                        new Set()
-                    );
-                }
+                addSocketToDocument(
+                    socket.id,
+                    documentId
+                );
 
-                documentRooms
-                    .get(documentId)
-                    .add(socket.id);
+                console.log(
+                    `Socket ${socket.id} joined ${room}`
+                );
 
-                socket.emit("document:sync", {
-                    documentId,
-                    content: [],
-                });
+                /*
+                   Convert stored Slate/Yjs-compatible
+                   document content into a string if needed.
 
-                socket.to(room).emit(
-                    "document:presence",
+                   For now the frontend receives the
+                   existing document content.
+                */
+
+                socket.emit(
+                    "document:sync",
                     {
                         documentId,
+                        content:
+                            document.content || [],
+                    }
+                );
+
+                /*
+                   Notify other users that someone
+                   joined the document.
+                */
+
+                socket.to(room).emit(
+                    "presence:update",
+                    {
+                        type: "join",
+                        userId,
                         socketId: socket.id,
-                        online: true,
                     }
                 );
 
                 console.log(
-                    `Socket ${socket.id} joined document ${documentId}`
+                    `User ${userId} joined document ${documentId}`
                 );
             } catch (error) {
                 console.error(
@@ -243,73 +427,221 @@ io.on("connection", (socket) => {
                     error
                 );
 
-                socket.emit("document:error", {
-                    documentId,
-                    message:
-                        "Unable to join document.",
-                });
-            }
-        }
-    );
-
-    socket.on(
-        "document:content",
-        async ({ documentId, content } = {}) => {
-            try {
-                if (!isValidObjectId(documentId)) {
-                    return;
-                }
-
-                if (!Array.isArray(content)) {
-                    return;
-                }
-
-                const room = `document:${documentId}`;
-
-                socket.to(room).emit(
-                    "document:content",
+                socket.emit(
+                    "document:error",
                     {
-                        documentId,
-                        content,
+                        message:
+                            "Unable to join document.",
                     }
                 );
-            } catch (error) {
-                console.error(
-                    "document:content error:",
-                    error
-                );
-
-                socket.emit("document:error", {
-                    documentId,
-                    message:
-                        "Unable to sync document content.",
-                });
             }
         }
     );
+
+socket.on(
+    "document:content",
+    async ({ documentId, content }) => {
+        try {
+            console.log("\n========== DOCUMENT CONTENT ==========");
+            console.log("Document ID:", documentId);
+            console.log("Socket ID:", socket.id);
+            console.log("User ID:", socket.user?.userId);
+
+            if (!documentId) {
+                console.error("Missing documentId");
+                return;
+            }
+
+            const userId = socket.user?.userId;
+
+            if (!userId) {
+                console.error(
+                    "Missing authenticated user"
+                );
+                return;
+            }
+
+            /*
+             * SECURITY:
+             * The socket must have successfully joined
+             * this document before it can modify it.
+             */
+            if (
+                !isSocketInDocument(
+                    socket.id,
+                    documentId
+                )
+            ) {
+                socket.emit("document:error", {
+                    message:
+                        "You are not connected to this document.",
+                });
+
+                return;
+            }
+
+            /*
+             * Validate Slate content.
+             */
+            if (!Array.isArray(content)) {
+                socket.emit("document:error", {
+                    message:
+                        "Invalid document content.",
+                });
+
+                return;
+            }
+
+            /*
+             * Find the document only for authorization.
+             */
+            const document =
+                await Document.findById(documentId)
+                    .select("workspace");
+
+            if (!document) {
+                socket.emit("document:error", {
+                    message:
+                        "Document not found.",
+                });
+
+                return;
+            }
+
+            /*
+             * SECURITY:
+             * Verify workspace membership.
+             */
+            const membership =
+                await Membership.findOne({
+                    workspace:
+                        document.workspace,
+                    user: userId,
+                }).select("_id");
+
+            if (!membership) {
+                socket.emit("document:error", {
+                    message:
+                        "You do not have access to this document.",
+                });
+
+                return;
+            }
+
+            /*
+             * ATOMIC UPDATE
+             *
+             * Do NOT use:
+             *
+             * document.content = content;
+             * await document.save();
+             *
+             * because multiple keystrokes can arrive
+             * concurrently and cause Mongoose VersionErrors.
+             */
+            await Document.findByIdAndUpdate(
+                documentId,
+                {
+                    $set: {
+                        content,
+                    },
+                },
+                {
+                    new: false,
+                    runValidators: true,
+                }
+            );
+
+            console.log(
+                `Document ${documentId} updated by user ${userId}`
+            );
+
+            /*
+             * Broadcast the latest content
+             * to everyone else in the room.
+             */
+            const room =
+                getDocumentRoom(documentId);
+
+            socket.to(room).emit(
+                "document:content",
+                {
+                    documentId,
+                    content,
+                    userId,
+                }
+            );
+
+            console.log(
+                "Document update broadcasted"
+            );
+
+            console.log(
+                "====================================\n"
+            );
+        } catch (error) {
+            console.error(
+                "document:content error:",
+                error
+            );
+
+            socket.emit("document:error", {
+                message:
+                    "Unable to update document.",
+            });
+        }
+    }
+);
+    /* ---------------------------------------------------
+       DOCUMENT UPDATE
+    --------------------------------------------------- */
 
     socket.on(
         "document:update",
-        async ({ documentId, update } = {}) => {
+        async ({
+            documentId,
+            update,
+        }) => {
             try {
-                if (!isValidObjectId(documentId)) {
+                if (!documentId) {
+                    return;
+                }
+
+                const userId =
+                    socket.user?.userId;
+
+                if (!userId) {
                     return;
                 }
 
                 if (
-                    typeof update !== "string" ||
-                    !update
+                    !isSocketInDocument(
+                        socket.id,
+                        documentId
+                    )
                 ) {
+                    socket.emit(
+                        "document:error",
+                        {
+                            message:
+                                "You are not connected to this document.",
+                        }
+                    );
+
                     return;
                 }
 
-                const room = `document:${documentId}`;
+                const room =
+                    getDocumentRoom(
+                        documentId
+                    );
 
                 socket.to(room).emit(
                     "document:update",
                     {
                         documentId,
                         update,
+                        userId,
                     }
                 );
             } catch (error) {
@@ -321,116 +653,140 @@ io.on("connection", (socket) => {
         }
     );
 
+    /* ---------------------------------------------------
+       LEAVE DOCUMENT
+    --------------------------------------------------- */
+
     socket.on(
         "leave:document",
-        ({ documentId } = {}) => {
-            if (!documentId) {
-                return;
-            }
+        ({ documentId }) => {
+            try {
+                if (!documentId) {
+                    return;
+                }
 
-            const room =
-                `document:${documentId}`;
-
-            socket.leave(room);
-
-            const roomSockets =
-                documentRooms.get(documentId);
-
-            if (roomSockets) {
-                roomSockets.delete(socket.id);
-
-                if (roomSockets.size === 0) {
-                    documentRooms.delete(
+                const room =
+                    getDocumentRoom(
                         documentId
                     );
-                }
-            }
 
-            socket.to(room).emit(
-                "document:presence",
-                {
-                    documentId,
-                    socketId: socket.id,
-                    online: false,
-                }
-            );
-        }
-    );
+                socket.leave(room);
 
-    socket.on("disconnect", () => {
-        console.log(
-            `Socket disconnected: ${socket.id}`
-        );
+                removeSocketFromDocument(
+                    socket.id,
+                    documentId
+                );
 
-        for (const [
-            documentId,
-            sockets,
-        ] of documentRooms.entries()) {
-            if (sockets.has(socket.id)) {
-                sockets.delete(socket.id);
-
-                socket.to(
-                    `document:${documentId}`
-                ).emit(
-                    "document:presence",
+                socket.to(room).emit(
+                    "presence:update",
                     {
-                        documentId,
+                        type: "leave",
+                        userId:
+                            socket.user?.userId,
                         socketId: socket.id,
-                        online: false,
                     }
                 );
 
-                if (sockets.size === 0) {
-                    documentRooms.delete(
+                console.log(
+                    `Socket ${socket.id} left ${room}`
+                );
+            } catch (error) {
+                console.error(
+                    "leave:document error:",
+                    error
+                );
+            }
+        }
+    );
+
+    /* ---------------------------------------------------
+       DISCONNECT
+    --------------------------------------------------- */
+
+    socket.on(
+        "disconnect",
+        (reason) => {
+            console.log(
+                `Socket disconnected: ${socket.id}`
+            );
+
+            console.log(
+                `Disconnect reason: ${reason}`
+            );
+
+            const documents =
+                socketDocuments.get(
+                    socket.id
+                );
+
+            if (documents) {
+                for (const documentId of documents) {
+                    const room =
+                        getDocumentRoom(
+                            documentId
+                        );
+
+                    socket.to(room).emit(
+                        "presence:update",
+                        {
+                            type: "leave",
+                            userId:
+                                socket.user?.userId,
+                            socketId:
+                                socket.id,
+                        }
+                    );
+
+                    removeSocketFromDocument(
+                        socket.id,
                         documentId
                     );
                 }
             }
-        }
-    });
-});
 
-/* =========================================================
-   ERROR HANDLER
-========================================================= */
-
-app.use((error, req, res, next) => {
-    console.error(
-        "Unhandled server error:",
-        error
-    );
-
-    if (res.headersSent) {
-        return next(error);
-    }
-
-    return res.status(500).json({
-        success: false,
-        message: "Internal server error.",
-    });
-});
-
-/* =========================================================
-   START SERVER
-========================================================= */
-
-const startServer = async () => {
-    try {
-        await connectDB();
-
-        server.listen(PORT, () => {
-            console.log(
-                `BrainFlow server running on port ${PORT}`
+            socketDocuments.delete(
+                socket.id
             );
-        });
-    } catch (error) {
+        }
+    );
+});
+
+/* -------------------------------------------------------
+   SOCKET ERROR LOGGING
+------------------------------------------------------- */
+
+io.engine.on(
+    "connection_error",
+    (error) => {
         console.error(
-            "Failed to start BrainFlow:",
+            "Socket.IO connection error:",
             error.message
         );
 
-        process.exit(1);
+        console.error(
+            "Socket.IO error context:",
+            error.context
+        );
     }
-};
+);
 
-startServer();
+/* -------------------------------------------------------
+   START SERVER
+------------------------------------------------------- */
+
+server.listen(
+    PORT,
+    () => {
+        console.log(
+            `BrainFlow server running on port ${PORT}`
+        );
+
+        console.log(
+            `BrainFlow client URL: ${CLIENT_URL}`
+        );
+
+        console.log(
+            "Socket.IO path: /socket.io/"
+        );
+    }
+);
