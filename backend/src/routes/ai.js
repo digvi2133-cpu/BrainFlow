@@ -1,0 +1,1 @@
+import {Router} from "express"; import {protect} from "../middleware/auth.js"; import {chatWithDocumentAI} from "../controllers/aiController.js"; const r=Router();r.use(protect);r.post("/chat",chatWithDocumentAI);export default r;

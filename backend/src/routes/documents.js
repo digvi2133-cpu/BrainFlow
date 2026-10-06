@@ -1,0 +1,1 @@
+import {Router} from "express"; import {protect} from "../middleware/auth.js"; import {getDocument,updateDocument,deleteDocument} from "../controllers/documentController.js"; const r=Router();r.use(protect);r.get("/:documentId",getDocument);r.patch("/:documentId",updateDocument);r.delete("/:documentId",deleteDocument);export default r;
