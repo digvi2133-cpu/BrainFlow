@@ -245,23 +245,25 @@ export const forgotPassword = async (req, res) => {
     try {
         const email = normalizeEmail(req.body?.email);
 
-        const user = await User.findOne({
-            email,
-        });
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: "Email is required.",
+            });
+        }
 
-        /*
-         * Do not reveal whether an account exists.
-         */
+        const user = await User.findOne({ email });
+
         if (!user) {
             return res.status(200).json({
                 success: true,
-                message: "If the account exists, an OTP has been sent.",
+                message:
+                    "If the account exists, an OTP has been sent.",
             });
         }
 
         const now = Date.now();
 
-        // Prevent OTP spam
         if (
             user.resetOtpSentAt &&
             now - user.resetOtpSentAt.getTime() < 60000
@@ -273,18 +275,15 @@ export const forgotPassword = async (req, res) => {
             });
         }
 
-        // Generate 6-digit OTP
         const otp = String(
             crypto.randomInt(100000, 1000000)
         );
 
-        // Store only OTP hash
         user.resetOtpHash = crypto
             .createHash("sha256")
             .update(otp)
             .digest("hex");
 
-        // OTP valid for 10 minutes
         user.resetOtpExpiresAt = new Date(
             now + 10 * 60 * 1000
         );
@@ -294,19 +293,40 @@ export const forgotPassword = async (req, res) => {
 
         await user.save();
 
-        // Send OTP through email
-        await sendOtpEmail(user.email, otp);
+        try {
+            await sendOtpEmail(user.email, otp);
+        } catch (emailError) {
+            console.error(
+                "OTP EMAIL SEND ERROR:",
+                emailError
+            );
+
+            user.resetOtpHash = null;
+            user.resetOtpExpiresAt = null;
+            user.resetOtpAttempts = 0;
+            user.resetOtpSentAt = null;
+
+            await user.save();
+
+            throw emailError;
+        }
 
         return res.status(200).json({
             success: true,
-            message: "If the account exists, an OTP has been sent.",
+            message:
+                "If the account exists, an OTP has been sent.",
         });
+
     } catch (error) {
-        console.error("FORGOT PASSWORD ERROR:", error);
+        console.error(
+            "FORGOT PASSWORD ERROR:",
+            error
+        );
 
         return res.status(500).json({
             success: false,
-            message: "Unable to send password reset OTP.",
+            message:
+                "Unable to send password reset OTP.",
         });
     }
 };
