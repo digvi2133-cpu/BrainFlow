@@ -2,8 +2,8 @@
 
 «AI-powered multi-tenant collaborative digital workspace»
 
-""Live Demo" (https://img.shields.io/badge/Live%20Demo-BrainFlow-7C3AED?style=for-the-badge)" (https://brain-flow-three.vercel.app/)
-""GitHub" (https://img.shields.io/badge/GitHub-Repository-181717?style=for-the-badge&logo=github)" (https://github.com/digvi2133-cpu/BrainFlow)
+""Live Demo" (https://brain-flow-three.vercel.app/)
+""GitHub"  (https://github.com/digvi2133-cpu/BrainFlow)
 
 BrainFlow is a full-stack collaborative workspace designed to bring documents, real-time collaboration, and contextual AI assistance into one place.
 
