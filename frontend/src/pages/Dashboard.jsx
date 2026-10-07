@@ -149,14 +149,29 @@ function WorkspaceCard({
                     : "border-white/[0.06] bg-white/[0.025] hover:border-white/[0.10] hover:bg-white/[0.045]"
             }`}
         >
-            <div className="relative flex items-center justify-center flex-shrink-0 overflow-hidden text-xs font-bold text-white shadow-lg h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 shadow-violet-600/10">
-                <div className="absolute inset-0 transition opacity-0 bg-white/10 group-hover:opacity-100" />
+           <div className="relative flex items-center justify-center flex-shrink-0 overflow-hidden text-white shadow-lg h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 shadow-violet-600/10">
+    <div className="absolute inset-0 transition opacity-0 bg-white/10 group-hover:opacity-100" />
 
-                <span className="relative">
-                    {initial}
-                </span>
-            </div>
-
+    <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        className="relative w-5 h-5"
+    >
+        <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M4 5.5A2.5 2.5 0 0 1 6.5 3h7.086a2.5 2.5 0 0 1 1.768.732l3.914 3.914A2.5 2.5 0 0 1 20 9.414V18.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5v-13Z"
+        />
+        <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M14 3v5h5M8 12h8M8 16h5"
+        />
+    </svg>
+</div>
             <div className="flex-1 min-w-0">
                 <p className="text-xs font-semibold truncate text-slate-200">
                     {workspace.name ||
@@ -432,7 +447,7 @@ export default function Dashboard() {
         loadingWorkspaces,
         setLoadingWorkspaces,
     ] = useState(true);
-
+    const [currentUser, setCurrentUser] = useState(null);
     const [
         loadingDocuments,
         setLoadingDocuments,
@@ -557,7 +572,19 @@ export default function Dashboard() {
     useEffect(() => {
         loadWorkspaces();
     }, []);
+    useEffect(() => {
+    loadCurrentUser();
+}, []);
 
+async function loadCurrentUser() {
+    try {
+        const data = await apiRequest("/auth/me");
+        console.log("Current user:", data);
+        setCurrentUser(data?.user || null);
+    } catch (error) {
+        console.error("Failed to load current user:", error);
+    }
+}
 
     /* ========================================================================
        LOAD DOCUMENTS WHEN WORKSPACE CHANGES
@@ -1324,12 +1351,9 @@ export default function Dashboard() {
                                             "Your workspace"}
                                     </div>
 
-                                    <h1 className="mt-5 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl lg:text-[44px]">
-                                        Welcome back,
-                                        <span className="block text-transparent bg-gradient-to-r from-violet-300 via-purple-200 to-indigo-300 bg-clip-text">
-                                            Digvi.
-                                        </span>
-                                    </h1>
+                                   <h1 className="mt-5 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl lg:text-[44px]">
+    Welcome back.
+</h1>
 
                                     <p className="max-w-xl mt-4 text-sm leading-7 text-slate-500">
                                         Your ideas, documents and
